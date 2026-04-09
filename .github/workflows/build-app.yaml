@@ -1,7 +1,18 @@
+name: Build app
+
+on:
+  workflow_call:
+    inputs:
+      app:
+        required: true
+        type: string
+      publish:
+        required: true
+        type: boolean
+
 jobs:
   prepare:
     name: Prepare
-    if: github.repository == 'home-assistant/apps-example'
     runs-on: ubuntu-latest
     outputs:
       architectures: ${{ steps.info.outputs.architectures }}
@@ -9,16 +20,22 @@ jobs:
       image_name: ${{ steps.normalize.outputs.image_name }}
       name: ${{ steps.normalize.outputs.name }}
       description: ${{ steps.normalize.outputs.description }}
-      url: ${{ steps.normalize.outputs.url }}
       registry_prefix: ${{ steps.normalize.outputs.registry_prefix }}
       version: ${{ steps.normalize.outputs.version }}
     steps:
-      - name: Check out the repository
-        uses: actions/checkout@v6.0.2
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Update stable version from tag
+        # When a version tag is pushed, overwrite the version field in
+        # config.yaml so the image is tagged correctly without a manual edit.
+        if: startsWith(github.ref, 'refs/tags/v') && inputs.app == 'mimirheim'
+        run: |
+          VERSION=${GITHUB_REF#refs/tags/v}
+          sed -i "s/^version:.*/version: \"${VERSION}\"/" ${{ inputs.app }}/config.yaml
 
       - name: Get app information
         id: info
-        uses: home-assistant/actions/helpers/info@master
+        uses: home-assistant/actions/helpers/info@f6f29a7ee3fa0eccadf3620a7b9ee00ab54ec03b # master
         with:
           path: "./${{ inputs.app }}"
 
@@ -28,20 +45,13 @@ jobs:
           image=${{ steps.info.outputs.image }}
           echo "image_name=${image##*/}" >> "$GITHUB_OUTPUT"
           echo "registry_prefix=${image%/*}" >> "$GITHUB_OUTPUT"
-          version=${{ steps.info.outputs.version }}
-          echo "version=${version}" >> "$GITHUB_OUTPUT"
-          name=${{ steps.info.outputs.name }}
-          echo "name=${name}" >> "$GITHUB_OUTPUT"
-          description=${{ steps.info.outputs.description }}
-          echo "description=${description}" >> "$GITHUB_OUTPUT"
-          url=${{ steps.info.outputs.url }}
-          if [[ -n "$url" && "$url" != "null" ]]; then
-            echo "url=${url}" >> "$GITHUB_OUTPUT"
-          fi
+          echo "version=${{ steps.info.outputs.version }}" >> "$GITHUB_OUTPUT"
+          echo "name=${{ steps.info.outputs.name }}" >> "$GITHUB_OUTPUT"
+          echo "description=${{ steps.info.outputs.description }}" >> "$GITHUB_OUTPUT"
 
       - name: Prepare build matrix
         id: matrix
-        uses: home-assistant/builder/actions/prepare-multi-arch-matrix@2026.03.2
+        uses: home-assistant/builder/actions/prepare-multi-arch-matrix@62a1597b84b3461abad9816d9cd92862a2b542c3 # 2026.03.2
         with:
           architectures: ${{ steps.info.outputs.architectures }}
           image-name: ${{ steps.normalize.outputs.image_name }}
@@ -59,26 +69,50 @@ jobs:
       fail-fast: false
       matrix: ${{ fromJSON(needs.prepare.outputs.build_matrix) }}
     steps:
-      - name: Check out the repository
-        uses: actions/checkout@v6.0.2
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
 
+      # Check out the mimirheim Python source at the version being built.
+      # The Dockerfile COPYs pyproject.toml, uv.lock, mimirheim/, mimirheim_helpers/,
+      # and container/ from the build context, so those files must be present in the
+      # workspace before the image build runs.
+      #
+      # Stable builds (version != 'edge') check out the matching v<version> tag.
+      # Beta builds (version == 'edge') check out main.
+      - name: Checkout mimirheim source
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: jsimonetti/mimirheim
+          ref: ${{ needs.prepare.outputs.version != 'edge' && format('v{0}', needs.prepare.outputs.version) || 'main' }}
+          path: _src
+          persist-credentials: false
+
+      - name: Overlay source files into build context
+        run: |
+          cp _src/pyproject.toml _src/uv.lock .
+          cp -r _src/mimirheim _src/mimirheim_helpers _src/container .
+          rm -rf _src
+
       - name: Build image
-        uses: home-assistant/builder/actions/build-image@2026.03.2
+        uses: home-assistant/builder/actions/build-image@62a1597b84b3461abad9816d9cd92862a2b542c3 # 2026.03.2
         with:
           arch: ${{ matrix.arch }}
           container-registry-password: ${{ secrets.GITHUB_TOKEN }}
-          context: "./${{ inputs.app }}"
+          # Build context is the repo root so the Dockerfile can COPY from
+          # both the add-on directory and the Python source tree.
+          context: "."
+          dockerfile: "./${{ inputs.app }}/Dockerfile"
           image: ${{ matrix.image }}
+          # Omit the 'latest' tag for the beta/edge channel to prevent it
+          # from overwriting the stable 'latest' tag.
           image-tags: |
             ${{ needs.prepare.outputs.version }}
-            latest
+            ${{ needs.prepare.outputs.version != 'edge' && 'latest' || '' }}
           labels: |
-            io.hass.type=app
+            io.hass.type=addon
             io.hass.name=${{ needs.prepare.outputs.name }}
             io.hass.description=${{ needs.prepare.outputs.description }}
-            ${{ needs.prepare.outputs.url && format('io.hass.url={0}', needs.prepare.outputs.url) || '' }}
           push: ${{ inputs.publish }}
           version: ${{ needs.prepare.outputs.version }}
 
@@ -92,12 +126,12 @@ jobs:
       packages: write
     steps:
       - name: Publish multi-arch manifest
-        uses: home-assistant/builder/actions/publish-multi-arch-manifest@2026.03.2
+        uses: home-assistant/builder/actions/publish-multi-arch-manifest@62a1597b84b3461abad9816d9cd92862a2b542c3 # 2026.03.2
         with:
           architectures: ${{ needs.prepare.outputs.architectures }}
           container-registry-password: ${{ secrets.GITHUB_TOKEN }}
           image-name: ${{ needs.prepare.outputs.image_name }}
           image-tags: |
             ${{ needs.prepare.outputs.version }}
-            latest
+            ${{ needs.prepare.outputs.version != 'edge' && 'latest' || '' }}
           registry-prefix: ${{ needs.prepare.outputs.registry_prefix }}
