@@ -7,7 +7,7 @@ Home Assistant add-on repository by [jsimonetti](https://github.com/jsimonetti).
 | Add-on | Description |
 |--------|-------------|
 | [Mimirheim](mimirheim/) | MILP energy optimiser for home battery, PV, and EV scheduling against dynamic electricity prices — stable channel |
-| [Mimirheim (Beta)](mimirheim-beta/) | Mimirheim edge channel — rebuilt on every commit to `main` |
+| [Mimirheim (Edge)](mimirheim-edge/) | Mimirheim edge channel — rebuilt on every commit to `main` |
 
 ## Installation
 
